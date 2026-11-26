@@ -6,10 +6,14 @@
 # Usage:
 #   sudo ./diskwatch.sh [-t PERCENT] [-p MOUNTPOINT] [-n TOPN] [-q]
 #
-#   -t PERCENT     Usage warning threshold (default: 80)
+#   -t PERCENT     Usage warning threshold, 1-100 (default: 80)
 #   -p MOUNTPOINT  Filesystem to analyse in detail (default: /)
+#                  When not "/", only paths on that filesystem are analysed
 #   -n TOPN        How many top entries to show per section (default: 15)
 #   -q             Quiet mode for cron: print nothing unless usage >= threshold
+#   -h             Show this help
+#
+# Exit status: 0 = below threshold, 1 = usage at or above threshold, 2 = bad usage.
 #
 # Cron example (hourly, mail/log only when above threshold):
 #   0 * * * * /usr/local/bin/diskwatch.sh -q -t 85 >> /var/log/diskwatch.log 2>&1
@@ -21,26 +25,49 @@ MOUNT="/"
 TOPN=15
 QUIET=0
 
+die()       { echo "diskwatch.sh: $*" >&2; exit 2; }
+is_uint()   { [[ $1 =~ ^[0-9]+$ ]]; }
+print_help() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
+
 while getopts "t:p:n:qh" opt; do
   case "$opt" in
-    t) THRESHOLD="$OPTARG" ;;
+    t) if ! is_uint "$OPTARG" || (( 10#$OPTARG < 1 || 10#$OPTARG > 100 )); then
+         die "-t expects a whole number between 1 and 100 (got '$OPTARG')"
+       fi
+       THRESHOLD=$((10#$OPTARG)) ;;
     p) MOUNT="$OPTARG" ;;
-    n) TOPN="$OPTARG" ;;
+    n) if ! is_uint "$OPTARG" || (( 10#$OPTARG < 1 )); then
+         die "-n expects a positive whole number (got '$OPTARG')"
+       fi
+       TOPN=$((10#$OPTARG)) ;;
     q) QUIET=1 ;;
-    h|*) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    h) print_help; exit 0 ;;
+    *) print_help >&2; exit 2 ;;
   esac
 done
 
-if [[ $EUID -ne 0 ]]; then
-  echo "WARNING: not running as root - results will be incomplete (permission denied on many paths)." >&2
-  echo "         Re-run with: sudo $0 $*" >&2
-  echo >&2
-fi
+[[ -d $MOUNT ]] || die "-p expects an existing directory (got '$MOUNT')"
+MOUNT_ROOT=$(stat -c %m -- "$MOUNT" 2>/dev/null) || die "cannot determine the filesystem of '$MOUNT'"
 
 # ---------- helpers ----------
-hr()      { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+# Colour only when writing to a terminal, so cron mail and log files stay clean
+if [[ -t 1 ]]; then
+  C_HDR=$'\033[1;36m'; C_RED=$'\033[1;31m'; C_GRN=$'\033[1;32m'; C_OFF=$'\033[0m'
+else
+  C_HDR=''; C_RED=''; C_GRN=''; C_OFF=''
+fi
+
+hr()      { printf '\n%s== %s ==%s\n' "$C_HDR" "$*" "$C_OFF"; }
 have()    { command -v "$1" >/dev/null 2>&1; }
 human()   { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
+
+# With the default "-p /" everything is analysed. With another mountpoint, only
+# paths that live on that filesystem are (the /var and known-consumer sections
+# would otherwise describe a different filesystem than the one requested).
+in_scope() {
+  [[ $MOUNT == "/" ]] && return 0
+  [[ $(stat -c %m -- "$1" 2>/dev/null) == "$MOUNT_ROOT" ]]
+}
 
 # Size (in bytes) + path, largest first, staying on one filesystem (-x)
 top_dirs() {
@@ -58,6 +85,13 @@ if [[ $QUIET -eq 1 && $USE_PCT -lt $THRESHOLD ]]; then
   exit 0
 fi
 
+# Checked after the quiet-mode exit so a healthy non-root cron run stays silent
+if [[ $EUID -ne 0 ]]; then
+  echo "WARNING: not running as root - results will be incomplete (permission denied on many paths)." >&2
+  echo "         Re-run with: sudo $0 $*" >&2
+  echo >&2
+fi
+
 echo "Disk report for $(hostname) - $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 # ---------- 1. Overview ----------
@@ -65,9 +99,9 @@ hr "Filesystem usage"
 df -hT -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
 
 if [[ $USE_PCT -ge $THRESHOLD ]]; then
-  printf '\n\033[1;31mALERT: %s is %s%% full (threshold %s%%)\033[0m\n' "$MOUNT" "$USE_PCT" "$THRESHOLD"
+  printf '\n%sALERT: %s is %s%% full (threshold %s%%)%s\n' "$C_RED" "$MOUNT" "$USE_PCT" "$THRESHOLD" "$C_OFF"
 else
-  printf '\n\033[1;32mOK: %s is %s%% full (threshold %s%%)\033[0m\n' "$MOUNT" "$USE_PCT" "$THRESHOLD"
+  printf '\n%sOK: %s is %s%% full (threshold %s%%)%s\n' "$C_GRN" "$MOUNT" "$USE_PCT" "$THRESHOLD" "$C_OFF"
 fi
 
 hr "Inode usage (a full inode table also causes 'No space left on device')"
@@ -77,15 +111,17 @@ df -ih -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
 hr "Largest top-level directories on $MOUNT"
 top_dirs "$MOUNT" 1
 
-hr "Largest directories under /var (usually logs, docker, caches, databases)"
-top_dirs /var 2
+if in_scope /var; then
+  hr "Largest directories under /var (usually logs, docker, caches, databases)"
+  top_dirs /var 2
+fi
 
 # ---------- 3. Known space hogs ----------
-hr "Known space consumers (summary)"
 declare -a SUMMARY=()
 add() { # label, path
   local label="$1" path="$2" bytes
   [[ -e "$path" ]] || return
+  in_scope "$path" || return
   bytes=$(du -xsb "$path" 2>/dev/null | awk '{print $1}')
   [[ -n "$bytes" ]] && SUMMARY+=("$bytes|$label|$path")
 }
@@ -116,18 +152,21 @@ add "LXD/LXC"                        /var/lib/lxd
 add "Libvirt images"                 /var/lib/libvirt
 
 if ((${#SUMMARY[@]})); then
+  hr "Known space consumers (summary)"
   printf '%s\n' "${SUMMARY[@]}" | sort -t'|' -k1,1 -rn | while IFS='|' read -r bytes label path; do
     printf '%12s  %-30s %s\n' "$(human "$bytes")" "$label" "$path"
   done
 fi
 
 # ---------- 4. Logs ----------
-hr "Largest log files in /var/log"
-find /var/log -xdev -type f -printf '%s %p\n' 2>/dev/null \
-  | sort -rn | head -n "$TOPN" \
-  | awk '{ s=$1; $1=""; sub(/^ /,""); printf "%10.1f MB  %s\n", s/1048576, $0 }'
+if in_scope /var/log; then
+  hr "Largest log files in /var/log"
+  find /var/log -xdev -type f -printf '%s %p\n' 2>/dev/null \
+    | sort -rn | head -n "$TOPN" \
+    | awk '{ s=$1; $1=""; sub(/^ /,""); printf "%10.1f MB  %s\n", s/1048576, $0 }'
+fi
 
-if have journalctl; then
+if have journalctl && in_scope /var/log; then
   hr "Systemd journal"
   journalctl --disk-usage 2>/dev/null
 fi
@@ -213,4 +252,6 @@ cat <<'EOF'
 EOF
 
 echo
+# Non-zero when over the threshold so cron wrappers / monitoring can react
+[[ $USE_PCT -ge $THRESHOLD ]] && exit 1
 exit 0
