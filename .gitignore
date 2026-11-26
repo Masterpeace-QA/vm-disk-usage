@@ -1,0 +1,9 @@
+# Log files (for example from the cron example in the README)
+*.log
+
+# Editors and OS files
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store
