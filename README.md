@@ -31,7 +31,7 @@ Tested target: **Ubuntu 24.04 LTS** (should work on other Debian/Ubuntu releases
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/vm-disk-usage.git
+git clone https://github.com/Masterpeace-QA/vm-disk-usage.git
 cd vm-disk-usage
 sudo install -m 755 diskwatch.sh /usr/local/bin/diskwatch.sh
 ```
