@@ -50,11 +50,21 @@ sudo diskwatch.sh [-t PERCENT] [-p MOUNTPOINT] [-n TOPN] [-q]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-t PERCENT` | Usage threshold that triggers the ALERT status | `80` |
-| `-p MOUNTPOINT` | Filesystem to analyse in detail | `/` |
+| `-t PERCENT` | Usage threshold (1-100) that triggers the ALERT status | `80` |
+| `-p MOUNTPOINT` | Filesystem to analyse in detail (see note below) | `/` |
 | `-n TOPN` | Number of top entries shown per section | `15` |
 | `-q` | Quiet mode for cron: print nothing unless usage is at or above the threshold | off |
 | `-h` | Show help | |
+
+With `-p` set to a mountpoint other than `/`, only paths that live on that filesystem are analysed, so the `/var`, known-consumers, `/var/log` and journal sections are skipped unless they are on that mount. The Docker sections always cover the whole system.
+
+### Exit status
+
+| Code | Meaning |
+|------|---------|
+| `0` | Usage is below the threshold |
+| `1` | Usage is at or above the threshold |
+| `2` | Invalid options or arguments |
 
 ### Examples
 
@@ -77,24 +87,37 @@ Quiet mode only produces output when the threshold is reached, so cron mail or a
 0 * * * * /usr/local/bin/diskwatch.sh -q -t 85 >> /var/log/diskwatch.log 2>&1
 ```
 
+Colour codes are only printed when output goes to a terminal, so the log file and cron mail stay plain text.
+
 To get an email, make sure a mail transport is configured and set `MAILTO=you@example.com` at the top of the crontab (and drop the `>>` redirect).
 
-## Sample output sections
+## Example output
+
+Abridged and illustrative; the values on your server will differ.
 
 ```
+Disk report for web-01 - 2026-01-15 10:00:01 UTC
+
 == Filesystem usage ==
-== Inode usage ==
-== Largest top-level directories on / ==
-== Largest directories under /var ==
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/sda1      ext4   50G   44G  3.9G  92% /
+
+ALERT: / is 92% full (threshold 85%)
+
 == Known space consumers (summary) ==
-== Largest log files in /var/log ==
-== Systemd journal ==
-== Docker: overall usage ==
-== Docker: images by size ==
-== Docker: container log files ==
-== Largest files on / (>50 MB) ==
-== Deleted files still held open by processes ==
-== Suggested cleanup commands ==
+         21GB  Docker data root               /var/lib/docker
+        9.8GB  System logs                    /var/log
+        3.1GB  Snap packages                  /var/lib/snapd
+        1.2GB  APT package cache              /var/cache/apt
+
+== Docker: container log files (json-file driver) - often the hidden culprit ==
+    8421.3 MB  app-backend                    /var/lib/docker/containers/<id>/<id>-json.log
+
+Default logging driver: json-file
+NOTE: no log rotation (max-size) configured in /etc/docker/daemon.json - container logs can grow unbounded.
+
+== Suggested cleanup commands (review before running) ==
+  ...
 ```
 
 ## Common fixes
@@ -134,4 +157,4 @@ Then `sudo systemctl restart docker`. The setting applies to newly created conta
 
 ## License
 
-Add a license of your choice (for example MIT) as a `LICENSE` file.
+Released under the [MIT License](LICENSE).
