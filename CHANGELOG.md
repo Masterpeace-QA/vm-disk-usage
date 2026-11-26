@@ -7,10 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - MIT `LICENSE`.
-- GitHub Actions workflow that runs ShellCheck and a few smoke tests on every push and pull request.
 - Exit status for `diskwatch.sh`: `1` when usage is at or above the threshold, `2` for invalid usage.
 - `.gitignore` and this changelog.
-- README: exit status section, a CI badge and an example of the report output.
+- README: exit status section and an example of the report output.
 
 ### Changed
 - With `-p` set to a mountpoint other than `/`, only paths on that filesystem are analysed
